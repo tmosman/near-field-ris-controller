@@ -1,0 +1,36 @@
+flowchart TB
+    subgraph clients["Clients"]
+        GUI["RIS GUI<br/>(browser)"]
+        HTTP["RisClient / curl<br/>HTTP :8080"]
+        UDP["RisFastClient<br/>UDP :5005"]
+    end
+
+    subgraph server["ris_controller server (Python)"]
+        API["Starlette REST + WebSocket"]
+        CB["CodebookManager<br/>codebooks/*.cbk"]
+        TC["TeensyClient"]
+        UL["UdpBeamListener"]
+        API --> CB
+        API --> TC
+        UL --> TC
+    end
+
+    subgraph teensy["Teensy 4.1 — firmware/ris_controller"]
+        SER["Serial parser<br/>APPLY 42 or 42"]
+        Q["Apply queue"]
+        ST["codebook_store<br/>QSPI flash lookup"]
+        SH["shift_driver<br/>20 GPIO → registers"]
+        SER --> Q --> ST --> SH
+    end
+
+    subgraph ris["RIS hardware"]
+        HW["64×64 phase panel"]
+    end
+
+    GUI -->|"POST select-codebook<br/>POST beam/apply"| API
+    HTTP --> API
+    UDP -->|"RI + uint16_be"| UL
+    CB -->|"CODEBOOK_BEGIN + binary<br/>(if CRC differs)"| TC
+    API -->|"APPLY / legacy index"| TC
+    TC -->|"USB serial 921600"| SER
+    SH --> HW

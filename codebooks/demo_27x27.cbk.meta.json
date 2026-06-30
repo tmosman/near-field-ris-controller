@@ -1,0 +1,9 @@
+{
+  "ris_rows": 64,
+  "ris_cols": 64,
+  "codeword_grid_rows": 27,
+  "codeword_grid_cols": 27,
+  "dummy_index": 0,
+  "index_order": "phi_major_theta_minor",
+  "step_cm": null
+}

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RIS Controller</title>
+  <link rel="stylesheet" href="/gui/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>RIS Controller</h1>
+    <p class="subtitle">Central manager for codebooks, beam patterns, and Teensy control</p>
+  </header>
+
+  <main class="layout">
+    <section class="panel connection-panel">
+      <h2>Server Connection</h2>
+      <label>
+        API base URL
+        <input type="url" id="server-url" placeholder="http://lab-pc:8080 (empty = this host)" />
+      </label>
+      <div class="row">
+        <button id="save-server">Connect</button>
+        <span id="server-hint" class="meta">Leave empty when GUI is opened from the server machine.</span>
+      </div>
+    </section>
+
+    <section class="panel status-panel">
+      <h2>System Status</h2>
+      <dl id="status-list"></dl>
+      <button id="refresh-status">Refresh</button>
+    </section>
+
+    <section class="panel codebook-panel">
+      <h2>Codebook</h2>
+      <label>
+        Library
+        <select id="codebook-select"></select>
+      </label>
+      <div class="row">
+        <button id="activate-codebook">Activate on Teensy</button>
+        <label class="checkbox">
+          <input type="checkbox" id="force-upload" />
+          Force re-upload
+        </label>
+      </div>
+      <label>
+        Upload new .cbk
+        <input type="file" id="codebook-file" accept=".cbk" />
+      </label>
+      <p id="codebook-meta" class="meta"></p>
+    </section>
+
+    <section class="panel beam-panel">
+      <h2>Beam / Codeword</h2>
+      <div class="row">
+        <label>
+          Index
+          <input type="number" id="beam-index" min="0" value="1" />
+        </label>
+        <button id="apply-beam">Apply Beam</button>
+      </div>
+      <p id="beam-status" class="meta"></p>
+
+      <h3>Codeword Grid</h3>
+      <p class="hint">Click a cell to preview and apply that codeword index.</p>
+      <div id="beam-grid" class="beam-grid"></div>
+    </section>
+
+    <section class="panel viz-panel">
+      <h2>RIS Phase Map (64×64)</h2>
+      <p id="ris-meta" class="meta"></p>
+      <div class="ris-legend">
+        <span class="swatch phase-0"></span> 0°
+        <span class="swatch phase-180"></span> 180°
+      </div>
+      <canvas id="ris-canvas" width="320" height="320" aria-label="64 by 64 RIS phase map"></canvas>
+    </section>
+
+    <section class="panel viz-panel">
+      <h2>Hardware Tile View</h2>
+      <p id="mask-meta" class="meta"></p>
+      <div id="tile-grid" class="tile-grid"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="ws-status">WS: connecting…</span>
+  </footer>
+
+  <script src="/gui/app.js"></script>
+</body>
+</html>

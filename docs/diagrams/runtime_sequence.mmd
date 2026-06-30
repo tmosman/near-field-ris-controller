@@ -1,0 +1,35 @@
+sequenceDiagram
+    participant C as Client (HTTP or UDP)
+    participant S as ris_controller server
+    participant Ser as USB serial
+    participant P as protocol.cpp
+    participant Store as codebook_store.cpp
+    participant Shift as shift_driver.cpp
+    participant RIS as RIS panel
+
+  rect rgb(240, 248, 255)
+    Note over C,S: Fast path — UDP or apply-fast (no hardware wait)
+    C->>S: UDP RI+index or POST /api/beam/apply-fast
+    S->>Ser: "42\\n" (fire-and-forget)
+    Ser->>P: handleApply(42) → enqueue
+    P-->>S: OK APPLY_QUEUED
+  end
+
+  rect rgb(255, 248, 240)
+    Note over C,S: Standard path — waits for shift complete
+    C->>S: POST /api/beam/apply {"index":42}
+    S->>Ser: APPLY 42
+    Ser->>P: handleApply(42) → enqueue
+    P-->>S: OK APPLY_QUEUED
+  end
+
+    P->>Store: storeReadMask(42, scratch, 1280)
+    Store->>Store: offset = base + 42 × 1280
+    Store-->>P: codeword (mask #42)
+
+    P->>Shift: shiftOutputFromBuffer(scratch, 1280)
+    loop 64 rows × 8 bit planes
+        Shift->>RIS: clock 20 data pins + latch
+    end
+    P-->>S: OK APPLIED 42
+    S-->>C: applied index (HTTP only)

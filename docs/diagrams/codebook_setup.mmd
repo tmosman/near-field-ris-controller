@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant GUI as RIS GUI / RisClient
+    participant S as Starlette server
+    participant M as CodebookManager
+    participant CB as codebooks/*.cbk
+    participant T as Teensy firmware
+    participant F as QSPI flash
+
+    GUI->>S: POST /api/session/select-codebook
+    S->>M: raw_payload(codebook_id)
+    M->>CB: read header + masks
+    CB-->>M: e.g. 730 masks × 1280 B
+    S->>T: STATUS
+    T-->>S: crc, num_masks, name
+
+    alt CRC mismatch or force_upload
+        S->>T: CODEBOOK_BEGIN name 730 1280 crc
+        T-->>S: READY
+        S->>T: binary payload (chunks)
+        T->>F: storeWriteChunk → verify CRC
+        T-->>S: OK VERIFIED
+    else CRC matches
+        Note over S,T: Skip upload — Teensy already has codebook
+    end
+
+    S->>M: set_active(codebook_id)
+    S-->>GUI: codebook_selected

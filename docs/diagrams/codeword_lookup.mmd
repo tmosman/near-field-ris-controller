@@ -1,0 +1,12 @@
+flowchart LR
+    IDX["beam_index = 42"]
+    META["Active codebook meta<br/>num_masks, mask_bytes=1280"]
+    CALC["flash offset =<br/>data_base + 42 × 1280"]
+    MASK["mask[42]<br/>1280-byte codeword"]
+    BUF["maskScratch[]"]
+    SHIFT["shiftOutputFromBuffer<br/>bit-serialize to 20 GPIO"]
+    RIS["64×64 phase pattern<br/>0° / 180° per element"]
+
+    IDX --> CALC
+    META --> CALC
+    CALC --> MASK --> BUF --> SHIFT --> RIS
