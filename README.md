@@ -4,7 +4,11 @@ Server-centric control stack for a Teensy-driven RIS hardware platform. A remote
 
 ```
 RIS GUI (browser)  --HTTP/WS-->  RIS Server (Python)  --serial-->  Teensy  -->  RIS motherboard
+                                      │
+                                      └── Direct CLI tools (upload / apply / probe)
 ```
+
+**Repository:** [github.com/tmosman/near-field-ris-controller](https://github.com/tmosman/near-field-ris-controller)
 
 ## Components
 
@@ -13,79 +17,253 @@ RIS GUI (browser)  --HTTP/WS-->  RIS Server (Python)  --serial-->  Teensy  -->  
 | `firmware/ris_controller/` | Slim Teensy firmware (no embedded codebook) |
 | `server/` | Starlette server — codebook library, Teensy bridge, REST + WebSocket |
 | `gui/` | Web UI — codebook selection, beam grid, pattern visualization |
-| `tools/` | Pack/extract `.cbk` codebooks |
+| `tools/` | Extract/pack `.cbk`, direct serial upload & apply |
 | `shared/` | Binary codebook format |
 | `client/` | Python `RisClient` for experiment scripts |
 | `examples/` | Example automation scripts |
 | `codebooks/` | Server-side codebook library (`.cbk` files) |
 
-The real imaging codebook is at `codebooks/Imaging_M260P260M520P0_STEP2cm.cbk` (730 masks, 1280 bytes/mask).
+The full imaging codebook is `codebooks/Imaging_M260P260M520P0_STEP2cm.cbk` (730 masks, 1280 bytes/mask). A smaller hardware test book is `codebooks/Firmware_script_plus_codewords.cbk` (22 masks).
 
-## Quick start (development, no hardware)
+## Setup
 
 ```bash
 cd ris_controller
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# Mock Teensy (no USB device required)
-export RIS_TEENSY_MOCK=1
-python run_server.py
 ```
 
-Open **http://localhost:8080** for the RIS GUI.
+## Command reference
 
-## Production (with Teensy 4.1)
+All commands assume the venv is active and you are in the repo root.
 
-1. Flash `firmware/ris_controller/ris_controller.ino` with Teensyduino (Teensy 4.1).
-   - Codebook lives in **RAM** — upload after each reboot. **Do not use SerialFlash** (GPIO pin 6 is the RIS shift clock).
-2. Connect Teensy USB to the server machine.
-3. Convert a legacy sketch to `.cbk` (one-time):
+### 1. Extract codewords from a legacy Arduino sketch
+
+Legacy `Imaging_*.ino` sketches embed masks as `//Mask …` sections with `0b……` bytes. Extract them into a portable `.cbk` file:
 
 ```bash
-python tools/extract_from_ino.py ~/Downloads/Imaging_M260P260M520P0_STEP2cm/Imaging_M260P260M520P0_STEP2cm.ino
+# Output: same path as .ino but with .cbk extension
+python tools/extract_from_ino.py \
+  ../Imaging_Empty/Imaging_Empty.ino
+
+# Full imaging codebook (730 masks)
+python tools/extract_from_ino.py \
+  ~/Downloads/Imaging_M260P260M520P0_STEP2cm/Imaging_M260P260M520P0_STEP2cm.ino \
+  --name Imaging_M260P260M520P0_STEP2cm \
+  -o codebooks/Imaging_M260P260M520P0_STEP2cm.cbk
 ```
 
-4. Start the server:
+Example output:
+
+```
+Extracted 22 masks from Imaging_Empty.ino -> codebooks/....cbk (mask_bytes=1280, crc=f064f1f4)
+```
+
+**Pack from raw mask binaries** (alternative to extraction):
 
 ```bash
-export RIS_TEENSY_PORT=/dev/ttyACM0   # or /dev/cu.usbmodem* on macOS
+python tools/pack_codebook.py \
+  --name MyCodebook \
+  --mask-dir ./masks/ \
+  -o codebooks/MyCodebook.cbk
+```
+
+**Generate a synthetic demo codebook** (729 masks, for GUI/server testing):
+
+```bash
+python tools/make_demo_codebook.py
+```
+
+### 2. Flash Teensy firmware (one-time)
+
+1. Open `firmware/ris_controller/ris_controller.ino` in Arduino IDE (Teensyduino, **Teensy 4.1**).
+2. Upload. Boot lines should include:
+   ```
+   OK RAM_STORE
+   WARN NO_CODEBOOK_LOADED
+   OK RIS_FW=3
+   OK BOOT
+   ```
+3. **Do not use SerialFlash** — GPIO pin 6 is the RIS shift clock.
+
+Codebooks live in **RAM only** and are lost on reboot or when the USB serial port is reopened. Re-upload after power cycle.
+
+### 3. Direct Teensy control (no server)
+
+Use these when debugging hardware or when the server is not running. **Only one process** may open the serial port (close Serial Monitor and `run_server.py` first).
+
+**Find the correct port:**
+
+```bash
+python tools/teensy_find_port.py
+```
+
+**Health check:**
+
+```bash
+python tools/teensy_probe.py --port /dev/ttyACM0
+python tools/teensy_apply.py --ping --port /dev/ttyACM0
+python tools/teensy_apply.py --status --port /dev/ttyACM0
+```
+
+Expected `STATUS` when loaded:
+
+```
+OK store=ram masks=22 mask_bytes=1280 name=Firmware_script_plus_codewords crc=f064f1f4 backend=ram
+```
+
+**Upload codebook** (921600 baud):
+
+```bash
+python tools/teensy_upload_cbk.py \
+  codebooks/Firmware_script_plus_codewords.cbk \
+  --port /dev/ttyACM0
+```
+
+**Upload and apply in one session** (recommended — opening serial clears RAM codebook on boot):
+
+```bash
+python tools/teensy_upload_cbk.py \
+  codebooks/Firmware_script_plus_codewords.cbk \
+  --port /dev/ttyACM0 \
+  --apply 1
+```
+
+**Apply beam index** (codebook must already be on Teensy):
+
+```bash
+# Preferred command form
+python tools/teensy_apply.py --index 1 --port /dev/ttyACM0
+
+# Legacy Imaging_Empty.ino style (plain integer, same as Serial.parseInt)
+python tools/teensy_apply.py --legacy --index 1 --port /dev/ttyACM0
+
+# Clear shift registers (all-off)
+python tools/teensy_apply.py --clear --port /dev/ttyACM0
+```
+
+**Beam index notes:**
+
+| Index | Meaning |
+|-------|---------|
+| `0` | Dummy all-off mask (~0 A) — not a real beam |
+| `1…N` | Real codewords; index `1` matches legacy `Imaging_Empty.ino` beam 1 (~11 A) |
+| `1…728` | Usable imaging indices for the 730-mask book (index 0 is dummy) |
+
+### 4. Run the server (with Teensy)
+
+```bash
+export RIS_TEENSY_PORT=/dev/ttyACM0   # macOS: /dev/cu.usbmodem*
 export RIS_TEENSY_BAUD=921600
 python run_server.py
 ```
 
-## Workflow
+Open **http://localhost:8080** for the GUI.
 
-### 1. Register a codebook on the server
-
-- Upload `.cbk` via GUI, or copy into `codebooks/`, or:
+**Mock mode** (no USB device — GUI/API development only):
 
 ```bash
-python tools/pack_codebook.py --name MyCodebook --mask-dir ./masks/ -o codebooks/MyCodebook.cbk
+export RIS_TEENSY_MOCK=1
+python run_server.py
 ```
 
-### 2. Activate codebook on Teensy (from GUI or API)
+**Remote access:** bind on all interfaces (default `0.0.0.0`) and open `http://<lab-pc-ip>:8080` from another machine.
 
-The server compares CRC with Teensy `STATUS`. If different (or **force re-upload**), it uploads via:
+### 5. Set beam index via server API
 
-```
-CODEBOOK_BEGIN <name> <num_masks> <mask_bytes> <crc32>
-<binary payload>
-OK VERIFIED
-```
+**Select codebook** (uploads to Teensy only if CRC differs, unless forced):
 
-### 3. Apply beam index (codeword)
-
-If the Teensy already has the right codebook, only the index is sent:
-
-```
-APPLY 42
+```bash
+curl -s -X POST http://localhost:8080/api/session/select-codebook \
+  -H 'Content-Type: application/json' \
+  -d '{"codebook_id":"Firmware_script_plus_codewords","force_upload":false}'
 ```
 
-Legacy scripts can still send plain integers (`42\n`).
+**Apply beam index:**
 
-## API (for RIS GUI / automation)
+```bash
+curl -s -X POST http://localhost:8080/api/beam/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"index":1}'
+```
+
+**Check status** (Teensy connection, active codebook, last applied index):
+
+```bash
+curl -s http://localhost:8080/api/status | python3 -m json.tool
+```
+
+**Force re-upload** after Teensy reboot:
+
+```bash
+curl -s -X POST http://localhost:8080/api/session/select-codebook \
+  -H 'Content-Type: application/json' \
+  -d '{"codebook_id":"Firmware_script_plus_codewords","force_upload":true}'
+
+curl -s -X POST http://localhost:8080/api/beam/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"index":1}'
+```
+
+### 6. Experiment scripts (Python client)
+
+Prefer the HTTP client over opening serial directly — the server owns the Teensy port:
+
+```python
+from client.ris_client import RisClient
+
+client = RisClient("http://lab-pc:8080")
+client.ensure_codebook("Imaging_M260P260M520P0_STEP2cm")  # uploads only if needed
+client.apply_beam(1)
+```
+
+**Beam sweep:**
+
+```bash
+export RIS_SERVER_URL=http://localhost:8080
+python examples/run_beam_sweep.py \
+  --codebook Imaging_M260P260M520P0_STEP2cm \
+  --start 1 --end 10 \
+  --dwell-ms 100
+```
+
+**Fast UDP apply** (fire-and-forget, server must be running):
+
+```python
+from client.ris_fast_client import RisFastClient
+
+with RisFastClient("127.0.0.1", 5005) as fast:
+    fast.apply_beam(42)
+```
+
+Benchmark: `python examples/bench_apply_latency.py`
+
+## Typical lab workflow
+
+```bash
+# After Teensy power-on or reboot:
+export RIS_TEENSY_PORT=/dev/ttyACM0
+python run_server.py
+
+# In another terminal — select book + apply beam 1:
+curl -X POST http://localhost:8080/api/session/select-codebook \
+  -H 'Content-Type: application/json' \
+  -d '{"codebook_id":"Firmware_script_plus_codewords","force_upload":true}'
+
+curl -X POST http://localhost:8080/api/beam/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"index":1}'
+```
+
+Or without the server:
+
+```bash
+python tools/teensy_upload_cbk.py codebooks/Firmware_script_plus_codewords.cbk \
+  --port /dev/ttyACM0 --apply 1
+```
+
+## API reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -97,55 +275,41 @@ Legacy scripts can still send plain integers (`42\n`).
 | GET | `/api/codebooks/{id}/meta` | Codebook grid + RIS dimensions |
 | POST | `/api/session/select-codebook` | Select + upload if needed |
 | POST | `/api/beam/apply` | Apply codeword index |
+| POST | `/api/beam/apply-fast` | Apply without waiting for hardware |
 | WS | `/ws/events` | `beam_applied`, `codebook_selected`, … |
 
-### Example: apply beam without re-uploading codebook
+## Teensy serial protocol
 
-```bash
-curl -X POST http://localhost:8080/api/session/select-codebook \
-  -H 'Content-Type: application/json' \
-  -d '{"codebook_id":"Imaging_M260P260M520P0_STEP2cm","force_upload":false}'
+Baud **921600** (ris_controller firmware). Legacy `Imaging_Empty.ino` used **115200**.
 
-curl -X POST http://localhost:8080/api/beam/apply \
-  -H 'Content-Type: application/json' \
-  -d '{"index":42}'
+| Command | Response |
+|---------|----------|
+| `PING` | `PONG` |
+| `STATUS` | `OK store=ram masks=N mask_bytes=1280 name=… crc=… backend=ram` |
+| `CODEBOOK_BEGIN name N B crc` | `READY` → binary payload → `OK VERIFIED` |
+| `APPLY 1` | `OK APPLY_QUEUED` → `OK APPLIED 1` |
+| `1` (legacy) | same as `APPLY 1` |
+| `CLEAR` | `OK CLEARED` |
+| `ABORT` | `OK ABORTED` |
+
+Upload sequence:
+
+```
+CODEBOOK_BEGIN Firmware_script_plus_codewords 22 1280 f064f1f4
+READY
+<binary payload>
+OK VERIFIED
 ```
 
-## Experiment scripts (via `RisClient`)
+## Codebook format (`.cbk`)
 
-Use the Python client instead of opening serial directly:
-
-```python
-from client.ris_client import RisClient
-
-client = RisClient("http://lab-pc:8080")
-client.ensure_codebook("Imaging_M260P260M520P0_STEP2cm")  # uploads only if needed
-client.apply_beam(42)
+```
+[96-byte header][mask0][mask1]...[maskN-1]
 ```
 
-Or run the included sweep example:
+Header: magic `RISCBK01`, `num_masks`, `mask_bytes`, `name`, `payload_crc32`.
 
-```bash
-export RIS_SERVER_URL=http://localhost:8080
-python examples/run_beam_sweep.py --codebook Imaging_M260P260M520P0_STEP2cm --start 1 --end 10
-```
-
-## Remote GUI
-
-The GUI can control a server on another machine:
-
-1. Start the server on the lab PC (`RIS_SERVER_HOST=0.0.0.0`).
-2. On your laptop, open the GUI and set **API base URL** to `http://<lab-pc-ip>:8080`, then click **Connect**.
-
-Alternatively open `http://<lab-pc-ip>:8080` directly in a browser on any machine on the network.
-
-For a GUI hosted on a different origin, set `RIS_CORS_ORIGINS` on the server (default `*`).
-
-## Visualization (64×64 RIS phase map)
-
-The GUI decodes each mask into a **64×64** array (`0` = 0°, `1` = 180°), matching the MATLAB tile layout (20 tiles × 16×16, first 64 columns of the 64×80 stitched grid).
-
-Optional metadata per codebook: `codebooks/MyCodebook.cbk.meta.json`
+Optional sidecar metadata: `codebooks/MyCodebook.cbk.meta.json`
 
 ```json
 {
@@ -158,29 +322,13 @@ Optional metadata per codebook: `codebooks/MyCodebook.cbk.meta.json`
 }
 ```
 
-- **Current beam:** `last_applied_index` in `/api/status` or GUI status panel  
-- **Codeword count:** `usable_masks` in metadata (729 for imaging + index 0 dummy)  
+## Visualization (64×64 RIS phase map)
+
+The GUI decodes each mask into a **64×64** array (`0` = 0°, `1` = 180°), matching the MATLAB tile layout (20 tiles × 16×16, first 64 columns of the 64×80 stitched grid).
+
+- **Current beam:** `last_applied_index` in `/api/status` or GUI status panel
+- **Codeword count:** `usable_masks` in metadata (729 for imaging + index 0 dummy)
 - **Phase map:** `GET /api/codebooks/{id}/mask/{index}/ris-map`
-
-## Codebook format (`.cbk`)
-
-```
-[96-byte header][mask0][mask1]...[maskN-1]
-```
-
-Header: magic `RISCBK01`, `num_masks`, `mask_bytes`, `name`, `payload_crc32`.
-
-## Teensy serial protocol
-
-| Command | Response |
-|---------|----------|
-| `PING` | `PONG` |
-| `STATUS` | `OK store=flash masks=730 mask_bytes=1280 name=... crc=...` |
-| `CODEBOOK_BEGIN name N B crc` | `READY` → binary → `OK VERIFIED` |
-| `APPLY 42` | `OK APPLY_QUEUED` → `OK APPLIED 42` |
-| `42` (legacy) | same as APPLY |
-| `CLEAR` | `OK CLEARED` |
-| `ABORT` | `OK ABORTED` |
 
 ## Environment variables
 
@@ -208,27 +356,26 @@ Header: magic `RISCBK01`, `num_masks`, `mask_bytes`, `name`, `payload_crc32`.
 
 Hardware shift-register programming is still **~25–50 ms** regardless of API — that is physics, not software.
 
-### Fast experiment client (UDP)
-
-```python
-from client.ris_fast_client import RisFastClient
-
-with RisFastClient("127.0.0.1", 5005) as fast:
-    fast.apply_beam(42)  # fire-and-forget
-```
-
-Packet format: `b"RI" + index.to_bytes(2, "big")`
-
-Benchmark: `python examples/bench_apply_latency.py`
+UDP packet format: `b"RI" + index.to_bytes(2, "big")`
 
 ## Architecture notes
 
 - **Server owns codebook library** — generation, storage, selection, upload orchestration.
 - **GUI is a thin client** — visualizes masks and sends high-level commands.
-- **Teensy stores one active codebook** in QSPI flash (4.1) or RAM (dev fallback).
+- **Teensy stores one active codebook in RAM** — re-upload after reboot; no flash persistence (pin 6 conflict).
 - **Fast path** — when CRC matches, only `APPLY <index>` is sent (~milliseconds).
 
 ## Documentation
 
 - **[Beam control flow](docs/beam_control_flow.md)** — diagrams from xApp/GUI through codeword lookup on Teensy.
 - Export SVG/PNG: `./scripts/export_diagrams.sh` (works with `curl` only — no npm required).
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `FAIL: Teensy not responding` | Close Serial Monitor / server; run `teensy_find_port.py` |
+| `0 A` on panel after apply | Use index ≥ 1; re-upload codebook; confirm firmware v3 (`OK RIS_FW=3`) |
+| Codebook missing after apply | Normal — USB open reboots Teensy; use `--apply N` on upload or re-select via server |
+| `OK APPLY_QUEUED` but tool times out | Update to latest `tools/teensy_serial_util.py` (buffered line reader) |
+| Port busy | Only one of: server, `teensy_*` tools, or Serial Monitor |
