@@ -23,7 +23,7 @@ RIS GUI (browser)  --HTTP/WS-->  RIS Server (Python)  --serial-->  Teensy  -->  
 | `examples/` | Example automation scripts |
 | `codebooks/` | Server-side codebook library (`.cbk` files) |
 
-The full imaging codebook is `codebooks/Imaging_M260P260M520P0_STEP2cm.cbk` (730 masks, 1280 bytes/mask). A smaller hardware test book is `codebooks/Firmware_script_plus_codewords.cbk` (22 masks).
+The full imaging codebook is `codebooks/Imaging_M260P260M520P0_STEP2cm.cbk` (730 masks, 1280 bytes/mask). Smaller test codebooks: `codebooks/Firmware_script_plus_codewords.cbk` (22 masks). Extract `../Mask_Upload_Test_V3.txt` to `codebooks/Mask_Upload_Test_V3.cbk` (21 masks) — see below.
 
 ## Setup
 
@@ -38,14 +38,40 @@ pip install -r requirements.txt
 
 All commands assume the venv is active and you are in the repo root.
 
-### 1. Extract codewords from a legacy Arduino sketch
+### 1. Create / extract codewords (`.cbk` codebook)
 
-Legacy `Imaging_*.ino` sketches embed masks as `//Mask …` sections with `0b……` bytes. Extract them into a portable `.cbk` file:
+Codewords are stored as **1280-byte masks** (64×64 RIS panel). Build a `.cbk` from a legacy text source, raw binaries, or an Arduino sketch.
+
+#### Source text format (`//Mask` + `0b…` bytes)
+
+Used by legacy `Imaging_*.ino` sketches and standalone `.txt` exports (e.g. `Mask_Upload_Test_V3.txt`):
+
+```
+//Mask 1
+{0b00000000,0b00000000,...,0b10101010
+},
+
+//Mask 2
+{0b00000000,...
+},
+```
+
+Each mask block must contain **1280** `0b........` byte literals. The extractor accepts **`.ino` or `.txt`** files with this layout.
+
+#### Extract from `.ino` or `.txt`
+
+`tools/extract_from_ino.py` parses `//Mask …` sections and writes a `.cbk` file:
 
 ```bash
-# Output: same path as .ino but with .cbk extension
+# Legacy Arduino sketch → .cbk (default output: same path with .cbk extension)
 python tools/extract_from_ino.py \
   ../Imaging_Empty/Imaging_Empty.ino
+
+# Standalone codeword text file (same format as .ino bitList)
+python tools/extract_from_ino.py \
+  ../Mask_Upload_Test_V3.txt \
+  --name Mask_Upload_Test_V3 \
+  -o codebooks/Mask_Upload_Test_V3.cbk
 
 # Full imaging codebook (730 masks)
 python tools/extract_from_ino.py \
@@ -57,10 +83,29 @@ python tools/extract_from_ino.py \
 Example output:
 
 ```
-Extracted 22 masks from Imaging_Empty.ino -> codebooks/....cbk (mask_bytes=1280, crc=f064f1f4)
+Extracted 21 masks from Mask_Upload_Test_V3.txt -> codebooks/Mask_Upload_Test_V3.cbk (mask_bytes=1280, crc=52276224)
 ```
 
-**Pack from raw mask binaries** (alternative to extraction):
+#### Beam index vs `//Mask` label
+
+Array indices in the `.cbk` are **0-based** and follow file order:
+
+| Source label | Codebook index | `teensy_apply --index` |
+|--------------|----------------|-------------------------|
+| `//Mask 1`   | 0              | `0`                     |
+| `//Mask 2`   | 1              | `1`                     |
+| `//Mask N`   | N − 1          | `N − 1`                 |
+
+Legacy `Imaging_Empty.ino` used **index 0** as an all-off dummy and **index 1** for the first real beam. If your `.txt` starts at `//Mask 1` with no dummy, either apply with `--index 0` for the first mask, or prepend a dummy block (below).
+
+#### Optional: legacy index 1 = first beam
+
+If you want **index 1** to select the first labeled mask (like `Imaging_Empty.ino` with dummy index 0), prepend an all-off `//Mask 0` block before `//Mask 1` in your source text — 1280 lines of `0b00000000`, then extract. Alternatively use a codebook that already includes dummy index 0 (e.g. `Firmware_script_plus_codewords.cbk`).
+
+#### Create new codewords
+
+- **Edit the text format:** add a new `//Mask N` block with 1280 `0b........` lines, then re-run `extract_from_ino.py`.
+- **Pack from binary files:** one file per mask, each exactly 1280 bytes:
 
 ```bash
 python tools/pack_codebook.py \
@@ -124,10 +169,17 @@ python tools/teensy_upload_cbk.py \
 **Upload and apply in one session** (recommended — opening serial clears RAM codebook on boot):
 
 ```bash
+# Firmware_script_plus_codewords: index 1 = first real beam (index 0 is dummy)
 python tools/teensy_upload_cbk.py \
   codebooks/Firmware_script_plus_codewords.cbk \
   --port /dev/ttyACM0 \
   --apply 1
+
+# Mask_Upload_Test_V3: index 0 = //Mask 1 (no dummy in source file)
+python tools/teensy_upload_cbk.py \
+  codebooks/Mask_Upload_Test_V3.cbk \
+  --port /dev/ttyACM0 \
+  --apply 0
 ```
 
 **Apply beam index** (codebook must already be on Teensy):
@@ -147,8 +199,9 @@ python tools/teensy_apply.py --clear --port /dev/ttyACM0
 
 | Index | Meaning |
 |-------|---------|
-| `0` | Dummy all-off mask (~0 A) — not a real beam |
-| `1…N` | Real codewords; index `1` matches legacy `Imaging_Empty.ino` beam 1 (~11 A) |
+| `0` | Dummy all-off mask (~0 A) when present at start of codebook |
+| `1…N` | Real codewords in books with dummy index 0 (e.g. `Firmware_script_plus_codewords`) |
+| `0…N−1` | Direct mapping when source has no dummy (`Mask_Upload_Test_V3`: index 0 = `//Mask 1`) |
 | `1…728` | Usable imaging indices for the 730-mask book (index 0 is dummy) |
 
 ### 4. Run the server (with Teensy)
@@ -261,6 +314,10 @@ Or without the server:
 ```bash
 python tools/teensy_upload_cbk.py codebooks/Firmware_script_plus_codewords.cbk \
   --port /dev/ttyACM0 --apply 1
+
+# From Mask_Upload_Test_V3.txt (after extract):
+python tools/teensy_upload_cbk.py codebooks/Mask_Upload_Test_V3.cbk \
+  --port /dev/ttyACM0 --apply 0   # //Mask 1
 ```
 
 ## API reference
